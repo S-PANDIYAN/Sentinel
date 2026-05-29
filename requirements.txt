@@ -1,0 +1,45 @@
+# PRAVAHA - Crowd Management System
+# Requirements for Perception Layer (Phases 1-4)
+
+# Core Computer Vision
+opencv-python==4.8.1.78
+opencv-contrib-python==4.8.1.78
+
+# Numerical Computing
+numpy==1.24.4  # Upgraded for compatibility with albucore/albumentations
+
+# Deep Learning (GPU Support for RTX 3050)
+torch==2.1.0+cu118
+torchvision==0.16.0+cu118
+
+# Image Processing
+Pillow==10.1.0
+
+# Phase 3: YOLOv8 Detection
+ultralytics==8.0.196  # YOLOv8n model
+
+# Phase 4: Enhanced DeepSORT with Appearance ReID
+deep-sort-realtime==1.3.2  # Appearance-based re-identification (fixes ID switches)
+
+# Utilities
+tqdm==4.66.1          # Progress bars
+pyyaml==6.0.1         # Configuration files
+python-dateutil==2.8.2
+
+# Phase 4 dependency (used by ultralytics internally)
+pandas==2.1.1         # Required by ultralytics, must match numpy 1.24.4
+scipy                 # Required by deep-sort-realtime
+
+# Web Interface (Streamlit Frontend)
+streamlit==1.29.0     # Web application framework
+plotly==5.18.0        # Interactive visualizations
+pandas==2.1.1         # Data manipulation (already listed above, ensures version)
+
+# Backend API Server
+flask==3.0.0          # REST API server
+flask-cors==4.0.0     # Cross-origin resource sharing
+requests==2.31.0      # HTTP client for frontend-backend communication
+
+# Phase 5+ (will be used later)
+# scikit-learn==1.3.2   # Anomaly Detection (Phase 8)
+matplotlib==3.8.0     # Visualization (Phase 14, also used in web interface)
