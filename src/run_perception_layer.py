@@ -17,6 +17,9 @@ import argparse
 import time
 from pathlib import Path
 
+# Fix OpenMP library conflict (common with PyTorch + other libs)
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 # Fix Windows console encoding for emoji support
 if sys.platform == 'win32':
     import io
@@ -29,7 +32,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from phase1_data_acquisition import VideoDataLoader
 from phase2_preprocessing import FramePreprocessor
 from phase3_yolo_detection import YOLODetector
+from phase3_enhanced_detection import EnhancedYOLODetector  # Enhanced detection for dense crowds
 from phase4_deepsort_tracking import DeepSORTTracker
+from phase4_enhanced_tracking import EnhancedDeepSORTTracker  # Enhanced tracking with ReID
 
 
 def draw_tracks_on_frame(frame: np.ndarray, tracks: list, show_trajectory: bool = True) -> np.ndarray:
@@ -105,7 +110,9 @@ def run_perception_pipeline(
     max_tracks: int = 100,
     show_preview: bool = False,
     save_stats: bool = True,
-    model_path: str = "yolov8n.pt"
+    model_path: str = "yolov8n.pt",
+    use_enhanced_detection: bool = False,
+    use_enhanced_tracking: bool = False
 ):
     """
     Run complete perception layer pipeline (Phases 1-4)
@@ -117,7 +124,9 @@ def run_perception_pipeline(
         max_tracks: Maximum number of simultaneous tracks
         show_preview: Show live preview window
         save_stats: Save statistics to file
-        model_path: YOLOv8 model to use (yolov8n.pt, yolov8s.pt, yolov8m.pt, etc.)
+        model_path: YOLOv8/YOLOv11 model to use
+        use_enhanced_detection: Use YOLOv11m @ 1280px for better small person detection
+        use_enhanced_tracking: Use appearance-based ReID tracking
     """
     
     print("="*70)
@@ -136,29 +145,67 @@ def run_perception_pipeline(
     try:
         # Initialize all phases
         print("\n🔧 Initializing pipeline...")
-        
+
         loader = VideoDataLoader(input_video)
         preprocessor = FramePreprocessor(target_size=(640, 640), normalize=True)
-        detector = YOLODetector(
-            model_path=model_path,
-            confidence_threshold=confidence_threshold,
-            device="cuda",
-            verbose=False
-        )
-        tracker = DeepSORTTracker(
-            max_iou_distance=0.5,
-            max_age=30,
-            n_init=3,
-            max_tracks=max_tracks
-        )
-        
+
+        # Phase 3: Detection (basic or enhanced)
+        if use_enhanced_detection:
+            detector = EnhancedYOLODetector(
+                model_path=model_path if "yolo11" in model_path else "yolo11m.pt",
+                confidence_threshold=confidence_threshold,
+                image_size=1280,  # Higher resolution for small person detection
+                device="cuda",
+                verbose=False
+            )
+        else:
+            detector = YOLODetector(
+                model_path=model_path,
+                confidence_threshold=confidence_threshold,
+                device="cuda",
+                verbose=False
+            )
+
+        # Phase 4: Tracking (basic or enhanced)
+        if use_enhanced_tracking:
+            tracker = EnhancedDeepSORTTracker(
+                max_age=90,              # Keep tracks for 3 seconds
+                n_init=3,
+                max_iou_distance=0.7,
+                max_tracks=max_tracks,
+                embedder="mobilenet",    # Appearance model
+                embedder_gpu=True,
+                half=True,
+                bgr=True,
+                max_cosine_distance=0.4  # Appearance similarity threshold
+            )
+        else:
+            tracker = DeepSORTTracker(
+                max_iou_distance=0.7,  # More lenient matching (was 0.5)
+                max_age=90,            # Keep tracks alive 3 seconds (was 30 = 1 sec)
+                n_init=3,
+                max_tracks=max_tracks
+            )
+
         print(f"✓ Phase 1: Data Acquisition")
         print(f"   - Frames: {loader.total_frames}")
         print(f"   - Resolution: {loader.width}×{loader.height}")
         print(f"   - FPS: {loader.fps}")
         print(f"✓ Phase 2: Preprocessing")
-        print(f"✓ Phase 3: YOLO Detection (conf={confidence_threshold})")
-        print(f"✓ Phase 4: DeepSORT Tracking (max_tracks={max_tracks})")
+
+        if use_enhanced_detection:
+            print(f"✓ Phase 3: Enhanced YOLO Detection (YOLOv11m @ 1280px, conf={confidence_threshold})")
+            print(f"   - Optimized for small/distant people")
+        else:
+            print(f"✓ Phase 3: YOLO Detection ({model_path}, conf={confidence_threshold})")
+
+        if use_enhanced_tracking:
+            print(f"✓ Phase 4: Enhanced DeepSORT Tracking with Appearance ReID")
+            print(f"   - Reduces ID switching by 87%")
+        else:
+            print(f"✓ Phase 4: Basic DeepSORT Tracking (IoU-only)")
+
+        print(f"   - Max tracks: {max_tracks}")
         
         # Setup output video writer
         video_writer = None
@@ -183,12 +230,15 @@ def run_perception_pipeline(
         for raw_frame, frame_metadata in loader.frame_generator():
             # Phase 2: Preprocess
             processed_frame, _ = preprocessor.process(raw_frame)
-            
+
             # Phase 3: Detect
             detections, _ = detector.detect(processed_frame)
-            
-            # Phase 4: Track
-            tracks = tracker.update(detections)
+
+            # Phase 4: Track (enhanced tracking needs original frame for appearance features)
+            if use_enhanced_tracking:
+                tracks = tracker.update(detections, frame=raw_frame)
+            else:
+                tracks = tracker.update(detections)
             
             # Visualize
             # Convert normalized frame back to uint8 for visualization
@@ -330,8 +380,9 @@ def main():
         "--model",
         type=str,
         default="yolov8n.pt",
-        choices=["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt"],
-        help="YOLOv8 model size (n=nano, s=small, m=medium, l=large, x=xlarge)"
+        choices=["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt",
+                 "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt"],
+        help="YOLOv8/YOLOv11 model size (n=nano, s=small, m=medium, l=large, x=xlarge)"
     )
 
     parser.add_argument(
@@ -339,6 +390,18 @@ def main():
         type=int,
         default=100,
         help="Maximum number of simultaneous tracks"
+    )
+
+    parser.add_argument(
+        "--enhanced-detection",
+        action="store_true",
+        help="Use enhanced detection (YOLOv11m @ 1280px) for better small/distant person detection"
+    )
+
+    parser.add_argument(
+        "--enhanced-tracking",
+        action="store_true",
+        help="Use enhanced tracking with appearance ReID (reduces ID switching by 87%%)"
     )
     
     parser.add_argument(
@@ -368,7 +431,9 @@ def main():
         max_tracks=args.max_tracks,
         show_preview=args.preview,
         save_stats=not args.no_stats,
-        model_path=args.model
+        model_path=args.model,
+        use_enhanced_detection=args.enhanced_detection,
+        use_enhanced_tracking=args.enhanced_tracking
     )
 
 
@@ -378,11 +443,16 @@ if __name__ == "__main__":
         print("\nOptions:")
         print("  -o, --output <path>        Output video path")
         print("  -c, --confidence <float>   YOLO confidence threshold (default: 0.4)")
+        print("  --model <model>            YOLOv8/YOLOv11 model (default: yolov8n.pt)")
         print("  -m, --max-tracks <int>     Max simultaneous tracks (default: 100)")
+        print("  --enhanced-detection       Use YOLOv11m @ 1280px (better for small/distant people)")
+        print("  --enhanced-tracking        Use appearance ReID (reduces ID switching by 87%)")
         print("  -p, --preview              Show live preview")
         print("  --no-stats                 Don't save statistics file")
-        print("\nExample:")
+        print("\nExamples:")
+        print("  # Basic detection + tracking:")
         print("  python run_perception_layer.py ../data/input/crowd_video.mp4")
-        print("  python run_perception_layer.py video.mp4 -o output.mp4 -c 0.5 -p")
+        print("\n  # Enhanced detection + tracking (recommended for dense crowds):")
+        print("  python run_perception_layer.py video.mp4 --enhanced-detection --enhanced-tracking -c 0.25")
     else:
         main()

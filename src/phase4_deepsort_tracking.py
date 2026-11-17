@@ -98,6 +98,48 @@ class Track:
             trajectory.append(center)
         return trajectory
 
+    def get_velocity(self, window: int = 3) -> Optional[Tuple[float, float]]:
+        """
+        Compute velocity from recent trajectory
+
+        Args:
+            window: Number of recent frames to average over
+
+        Returns:
+            (vx, vy): Velocity in pixels per frame, or None if insufficient history
+        """
+        if len(self.history) < 2:
+            return None
+
+        # Use recent frames for velocity estimation
+        recent_history = self.history[-min(window + 1, len(self.history)):]
+
+        if len(recent_history) < 2:
+            return None
+
+        # Compute velocities between consecutive frames
+        velocities = []
+        for i in range(1, len(recent_history)):
+            prev_bbox = recent_history[i-1]
+            curr_bbox = recent_history[i]
+
+            # Center positions
+            prev_cx = (prev_bbox[0] + prev_bbox[2]) / 2
+            prev_cy = (prev_bbox[1] + prev_bbox[3]) / 2
+            curr_cx = (curr_bbox[0] + curr_bbox[2]) / 2
+            curr_cy = (curr_bbox[1] + curr_bbox[3]) / 2
+
+            # Velocity
+            vx = curr_cx - prev_cx
+            vy = curr_cy - prev_cy
+            velocities.append((vx, vy))
+
+        # Average velocities
+        avg_vx = sum(v[0] for v in velocities) / len(velocities)
+        avg_vy = sum(v[1] for v in velocities) / len(velocities)
+
+        return (avg_vx, avg_vy)
+
 
 class DeepSORTTracker:
     """
@@ -303,10 +345,11 @@ class DeepSORTTracker:
                     'bbox': track.bbox,
                     'confidence': track.confidence,
                     'trajectory': track.get_trajectory(),
+                    'velocity': track.get_velocity(),  # Add velocity for flow analysis
                     'age': track.age,
                     'state': track.state
                 })
-        
+
         return output_tracks
     
     def get_stats(self) -> dict:
